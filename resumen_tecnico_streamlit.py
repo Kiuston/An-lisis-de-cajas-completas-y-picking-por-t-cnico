@@ -1,40 +1,71 @@
-
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Resumen por Técnico", layout="wide")
-st.title("📦 Análisis Técnico: Cajas vs Picking")
+st.title("📦 Análisis de cajas completas y picking por técnico")
 
-df = pd.DataFrame([
-    {"Técnico": "Max", "Unidades Buenas": 1671, "Unidades Defectuosas": 37, "Cajas Completas": 11, "Unidades Sobrantes": 805},
-    {"Técnico": "Antonio", "Unidades Buenas": 5362, "Unidades Defectuosas": 128, "Cajas Completas": 86, "Unidades Sobrantes": 3110},
-    {"Técnico": "Oscar L.", "Unidades Buenas": 6619, "Unidades Defectuosas": 63, "Cajas Completas": 53, "Unidades Sobrantes": 5333},
-    {"Técnico": "Kilian", "Unidades Buenas": 667, "Unidades Defectuosas": 27, "Cajas Completas": 0, "Unidades Sobrantes": 667},
-    {"Técnico": "Teixeira", "Unidades Buenas": 2838, "Unidades Defectuosas": 122, "Cajas Completas": 20, "Unidades Sobrantes": 1990},
-    {"Técnico": "Andrys", "Unidades Buenas": 1103, "Unidades Defectuosas": 25, "Cajas Completas": 10, "Unidades Sobrantes": 893},
-])
+uploaded_file = st.file_uploader("📂 Subí tu archivo Excel (.xlsx)", type=["xlsx"])
 
-for _, row in df.iterrows():
-    with st.container():
-        st.subheader(f"Técnico: {row['Técnico']}")
+if uploaded_file:
+    df = pd.read_excel(uploaded_file, sheet_name="LASER", header=None)
 
-        col1, col2 = st.columns([1, 2])
+    fila_17 = df.iloc[16].fillna("").astype(str).tolist()
+    try:
+        col_codigo = fila_17.index("CODIGO ADMIN")
+        col_cajas = fila_17.index("Cajas")
+    except ValueError:
+        st.error("No se encontraron las columnas necesarias: 'CODIGO ADMIN' o 'Cajas'.")
+        st.stop()
 
-        with col1:
-            st.metric("Unidades Buenas", int(row["Unidades Buenas"]))
-            st.metric("Unidades Defectuosas", int(row["Unidades Defectuosas"]))
-            st.metric("Cajas Completas", int(row["Cajas Completas"]))
-            st.metric("Unidades a Picking", int(row["Unidades Sobrantes"]))
+    # Obtener tabla de referencia
+    df_referencia = df.iloc[17:, [col_codigo, col_cajas]].copy()
+    df_referencia.columns = ["Codigo", "Cajas"]
+    df_referencia = df_referencia.dropna(subset=["Codigo"])
+    df_referencia["Cajas"] = pd.to_numeric(df_referencia["Cajas"], errors="coerce").fillna(0)
+    df_referencia = df_referencia.set_index("Codigo")
 
-        with col2:
-            fig, ax = plt.subplots()
-            ax.pie(
-                [row["Cajas Completas"], row["Unidades Sobrantes"]],
-                labels=["Cajas Completas", "Va a Picking"],
-                colors=["#4CAF50", "#FFC107"],
-                startangle=90,
-                wedgeprops={"edgecolor": "white"}
-            )
-            ax.axis("equal")
-            st.pyplot(fig)
+    # Detectar técnicos y columnas de defectuosos
+    fila_16 = df.iloc[15].fillna("").astype(str).tolist()
+    tecnicos = []
+    for idx, val in enumerate(fila_16):
+        if "(PARTE" in val:
+            tecnicos.append((val.strip(), idx))
+
+    for nombre, col in tecnicos:
+        col_ini = col
+        col_fin = col + 2  # Asumimos que usa 3 columnas consecutivas
+
+        data = df.iloc[17:, col_ini:col_ini+3].copy()
+        data.columns = ["Uds1", "Uds2", "Uds3"]
+        data = data.apply(pd.to_numeric, errors="coerce").fillna(0)
+        data["Unidades buenas"] = data[["Uds1", "Uds2", "Uds3"]].sum(axis=1).astype(int)
+
+        codigos = df.iloc[17:, col_codigo]
+        data["Codigo"] = codigos
+        data = data.dropna(subset=["Codigo"])
+        data = data.merge(df_referencia, on="Codigo", how="left")
+        data = data.dropna(subset=["Cajas"])
+        data["Cajas completas"] = (data["Unidades buenas"] // data["Cajas"]).astype(int)
+        data["Unidades sobrantes"] = (data["Unidades buenas"] % data["Cajas"]).astype(int)
+        data["Clasificación"] = data["Cajas completas"].apply(lambda x: "Caja completa" if x > 0 else "Caja sin cantidad")
+
+        total_buenas = data["Unidades buenas"].sum()
+        total_cajas = data["Cajas completas"].sum()
+        total_sobrantes = data["Unidades sobrantes"].sum()
+
+        st.markdown(f"### 👨‍🔧 Técnico: **{nombre}**")
+        st.dataframe(data[["Codigo", "Cajas", "Unidades buenas", "Cajas completas", "Unidades sobrantes", "Clasificación"]], use_container_width=True)
+
+        fig, ax = plt.subplots()
+        valores = [total_cajas, total_sobrantes]
+        etiquetas = [f"Cajas completas ({total_cajas})", f"Unidades sobrantes ({total_sobrantes})"]
+        colores = ["#1f77b4", "#ff7f0e"]
+        ax.pie(valores, labels=etiquetas, colors=colores, startangle=90)
+        ax.axis("equal")
+        st.pyplot(fig)
+
+        with st.expander("📊 Resumen numérico"):
+            st.metric("Total de Unidades Buenas", f"{total_buenas:,}")
+            st.metric("Cajas Completas", total_cajas)
+            st.metric("Unidades Sobrantes", total_sobrantes)
